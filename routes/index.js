@@ -3,6 +3,8 @@ const router = express.Router();
 require('dotenv').config();
 const puppeteer = require('puppeteer');
 const rateLimit = require('express-rate-limit');
+const {GoogleGenAI, Type} = require('@google/genai');
+
 
 const limiter = rateLimit({
     windowMs: 10 * 1000, // 10 seconds
@@ -58,17 +60,7 @@ function getAmazonAssociateLink(page, url) {
 }
 
 router.post('/', limiter, async function (req, res, next) {
-    const password = req.body.password;
-
-    if (!password) {
-        return res.status(400).send('Password is required');
-    }
-
-    if (password !== process.env.PASSWORD) {
-        return res.status(403).send('Forbidden: Invalid password');
-    }
-
-    const {url} = req.body;
+    const {url, description} = req.body;
 
     if (!url) {
         return res.status(400).send('URL is required');
@@ -76,6 +68,10 @@ router.post('/', limiter, async function (req, res, next) {
 
     if (!validateUrl(url)) {
         return res.status(400).send('Invalid Amazon URL');
+    }
+
+    if (!description) {
+        return res.status(400).send('Description is required');
     }
 
     try {
@@ -88,7 +84,59 @@ router.post('/', limiter, async function (req, res, next) {
         await removeAutomationFlag(page);
         const result = await getAmazonAssociateLink(page, url);
         await browser.close();
-        res.send(result);
+
+        const ai = new GoogleGenAI({
+            apiKey: process.env.GOOGLE_GENAI_API_KEY,
+        });
+
+        const response = await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: "Generate a catchy social media post for the following product description, all in pt-BR. The post should include a title, a brief description, the original price, the discount amount, the final price after discount, and a coupon code if available. Keep the title under 10 words and maybe be all caps, you decide, the description under 15 words. The product description will contain a title first, followed by a description, then it might contain the original value of the product followed by the final value with the coupon applied, then the coupon if it has one and finally the link to access the product, some of those fields might be missing so be careful \n\nthe link will br this: " + result + "\n\n for the generated post, make sure to rewrite the contents to be more original \n\nProduct Description: " + description,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: {
+                    type: Type.OBJECT,
+                    properties: {
+                        postTitle: {
+                            type: Type.STRING,
+                            description: "A catchy title for the product, no more than 10 words."
+                        },
+                        postDescription: {
+                            type: Type.STRING,
+                            description: "A brief description of the product, no more than 50 words."
+                        },
+                        originalValue: {
+                            type: Type.STRING,
+                            description: "The original price of the product without any discounts."
+                        },
+                        discountValue: {
+                            type: Type.STRING,
+                            description: "The amount of money saved due to the discount."
+                        },
+                        finalValue: {
+                            type: Type.STRING,
+                            description: "The final price of the product after applying the discount."
+                        },
+                        couponCode: {
+                            type: Type.STRING,
+                            description: "If no coupon code is available, return an empty string."
+                        },
+                        productLink: {type: Type.STRING, description: "The link to access the product."},
+                    },
+                    propertyOrdering: [
+                        "postTitle",
+                        "postDescription",
+                        "originalValue",
+                        "discountValue",
+                        "finalValue",
+                        "couponCode",
+                        "productLink"
+                    ]
+                },
+            }
+        });
+
+        res.send(response.text);
     } catch (error) {
         console.error('Error:', error);
         res.status(500).send('An error occurred while processing your request');
